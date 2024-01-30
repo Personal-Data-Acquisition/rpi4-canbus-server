@@ -10,8 +10,8 @@ dtoverlay=spi-bcm2835-overlay"
 if grep -Fxq "$lines_to_add" /boot/config.txt; then
   echo "Lines are already present in /boot/config.txt. Bringing up canbus."
   dmesg | grep spi
-  sudo ip link set can0 up type can bitrate 1000000
-  sudo ip link set can1 up type can bitrate 1000000
+  sudo ip link set can0 up type can bitrate 500000
+  sudo ip link set can1 up type can bitrate 500000
   sudo ifconfig can0 txqueuelen 65536
   sudo ifconfig can1 txqueuelen 65536
   ifconfig | grep can
