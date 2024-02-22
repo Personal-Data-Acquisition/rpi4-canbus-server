@@ -6,6 +6,14 @@ use half::f16;
 use sqlx::SqlitePool;
 use anyhow::{anyhow, Result};
 use sqlx::sqlite::SqliteConnectOptions;
+use async_trait::async_trait;
+
+#[async_trait]
+trait Parser {
+    async fn new(pool: &SqlitePool) -> Result<Self>    where
+        Self: Sized;
+    async fn parse(&mut self, frame_data: &[u8], pool: &SqlitePool) -> Result<()>;
+}
 
 const SQLITE_DATABASE_PATH: &str = "sensor_data.db";
 
@@ -15,6 +23,22 @@ struct GpsParser {
 }
 
 impl GpsParser {
+    fn fix_type_to_string(fix_type: nmea::sentences::FixType) -> &'static str {
+        match fix_type {
+            nmea::sentences::FixType::Invalid => "Invalid",
+            nmea::sentences::FixType::Gps => "Gps",
+            nmea::sentences::FixType::DGps => "DGps",
+            nmea::sentences::FixType::Pps => "Pps",
+            nmea::sentences::FixType::Rtk => "Rtk",
+            nmea::sentences::FixType::FloatRtk => "FloatRtk",
+            nmea::sentences::FixType::Estimated => "Estimated",
+            nmea::sentences::FixType::Manual => "Manual",
+            nmea::sentences::FixType::Simulation => "Simulation",
+        }
+    }
+}
+#[async_trait]
+impl Parser for GpsParser {
     async fn new(pool: &SqlitePool) -> Result<Self> {
         // Create a GPS data table if it doesn't exist
         sqlx::query(
@@ -40,19 +64,6 @@ impl GpsParser {
             nmea: Nmea::default(),
             buffer: vec![],
         })
-    }
-    fn fix_type_to_string(fix_type: nmea::sentences::FixType) -> &'static str {
-        match fix_type {
-            nmea::sentences::FixType::Invalid => "Invalid",
-            nmea::sentences::FixType::Gps => "Gps",
-            nmea::sentences::FixType::DGps => "DGps",
-            nmea::sentences::FixType::Pps => "Pps",
-            nmea::sentences::FixType::Rtk => "Rtk",
-            nmea::sentences::FixType::FloatRtk => "FloatRtk",
-            nmea::sentences::FixType::Estimated => "Estimated",
-            nmea::sentences::FixType::Manual => "Manual",
-            nmea::sentences::FixType::Simulation => "Simulation",
-        }
     }
 
     async fn parse(&mut self, frame_data:&[u8],pool: &SqlitePool)->Result<()> {
@@ -124,7 +135,8 @@ impl GpsParser {
 struct Mpu9250Parser {
     readings:[[f32; 3]; 3],
 }
-impl Mpu9250Parser {
+#[async_trait]
+impl Parser for Mpu9250Parser {
     async fn new(pool: &SqlitePool) -> Result<Self> {
         // Create a GPS data table if it doesn't exist
         sqlx::query(
