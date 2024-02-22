@@ -2,43 +2,41 @@ use std::io;
 use std::str::from_utf8;
 use socketcan::{CanFrame, CanSocket, EmbeddedFrame, Socket};
 use embedded_can::{Frame, Id, StandardId};
-use nmea::{Error, Nmea, SentenceType};
-use std::fs::File;
-use std::io::Write;
-use std::path::Path;
+use nmea::{Nmea, SentenceType};
 use half::f16;
+use sqlx::sqlite;
+use anyhow::Result;
+use sqlx::sqlite::SqliteConnectOptions;
 
-const GPS_CSV_FILE_PATH: &str = "gps_data.csv";
+const SQLITE_DATABASE_PATH: &str = "sensor_data.db";
 
 struct GpsParser {
     nmea: Nmea,
     buffer:Vec<u8>,
-    gps_csv_file:File,
 }
 
 impl GpsParser {
     fn new() -> io::Result<GpsParser> {
-        // Check if the file already exists
-        let file_exists = Path::new(GPS_CSV_FILE_PATH).exists();
-
-        // Open or create a file for writing
-        let mut gps_csv_file = File::create(GPS_CSV_FILE_PATH)?;
-
-        // Write the CSV header only if the file is newly created
-        if !file_exists {
-            writeln!(
-                gps_csv_file,
-                "Fix Time,Fix Date,Fix Type,Latitude,Longitude,Altitude,Speed over Ground,True Course,Number of Fix Satellites,HDOP,VDOP,PDOP,Geoid Separation"
-            )?;
-        }
-
         Ok(GpsParser {
             nmea: Nmea::default(),
             buffer: vec![],
-            gps_csv_file,
         })
     }
-    fn parse(&mut self, frame_data:&[u8]) {
+    // fn fix_type_to_string(fix_type: FixType) -> &'static str {
+    //     match fix_type {
+    //         <Nmea as Fixtype>::FixType::Invalid => "Invalid",
+    //         Nmea::FixType::Gps => "Gps",
+    //         Nmea::FixType::DGps => "DGps",
+    //         Nmea::FixType::Pps => "Pps",
+    //         Nmea::FixType::Rtk => "Rtk",
+    //         Nmea::FixType::FloatRtk => "FloatRtk",
+    //         Nmea::FixType::Estimated => "Estimated",
+    //         Nmea::FixType::Manual => "Manual",
+    //         Nmea::FixType::Simulation => "Simulation",
+    //     }
+    // }
+
+    async fn parse(&mut self, frame_data:&[u8],pool: &sqlite::SqlitePool)->Result<()> {
         self.buffer.extend_from_slice(frame_data);
         //nmea lines start with '$', we need to remove anything before that
         //sometimes there are leading \0 we need to skip
@@ -62,20 +60,24 @@ impl GpsParser {
                 }
                 //each message blocked capped off with GLL message
                 Ok(SentenceType::GLL)=>{
-                    writeln!(self.gps_csv_file, "{},{},{:?},{:.4},{:.4},{},{},{},{},{},{},{},{}",
-                             self.nmea.fix_time.unwrap_or_default(),
-                             self.nmea.fix_date.unwrap_or_default(),
-                             self.nmea.fix_type,
-                             self.nmea.latitude.unwrap_or_default(),
-                             self.nmea.longitude.unwrap_or_default(),
-                             self.nmea.altitude.unwrap_or_default(),
-                             self.nmea.speed_over_ground.unwrap_or_default(),
-                             self.nmea.true_course.unwrap_or_default(),
-                             self.nmea.num_of_fix_satellites.unwrap_or_default(),
-                             self.nmea.hdop.unwrap_or_default(),
-                             self.nmea.vdop.unwrap_or_default(),
-                             self.nmea.pdop.unwrap_or_default(),
-                             self.nmea.geoid_separation.unwrap_or_default()).expect("Parse error");
+                    sqlx::query(
+                        "INSERT INTO gps_data (fix_time, fix_date, latitude, longitude, altitude, speed_over_ground, true_course, num_of_fix_satellites, hdop, vdop, pdop, geoid_separation) \
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                        .bind(self.nmea.fix_time.unwrap_or_default().to_string())
+                        .bind(self.nmea.fix_date.unwrap_or_default().to_string())
+                        //.bind(Self::fix_type_to_string(self.nmea.fix_type.unwrap()))
+                        .bind(self.nmea.latitude.unwrap_or_default())
+                        .bind(self.nmea.longitude.unwrap_or_default())
+                        .bind(self.nmea.altitude.unwrap_or_default())
+                        .bind(self.nmea.speed_over_ground.unwrap_or_default())
+                        .bind(self.nmea.true_course.unwrap_or_default())
+                        .bind(self.nmea.num_of_fix_satellites.unwrap_or_default())
+                        .bind(self.nmea.hdop.unwrap_or_default())
+                        .bind(self.nmea.vdop.unwrap_or_default())
+                        .bind(self.nmea.pdop.unwrap_or_default())
+                        .bind(self.nmea.geoid_separation.unwrap_or_default())
+                        .execute(pool).await?;
+
 
                     println!("recieved:{}",message_str);
                     println!("Fix Time: {}", self.nmea.fix_time.unwrap_or_default());
@@ -96,25 +98,53 @@ impl GpsParser {
                 _ => {}
             }
         }
+        Ok(())
     }
 }
 
 
 const CAN_INTERFACE_0: &str = "can0";
-
-fn main() -> Result<(), io::Error> {
+//tokio for sql operations
+#[tokio::main]
+async fn main() -> Result<()> {
 
     // Open CAN sockets for sending and receiving
     let can_socket = CanSocket::open(CAN_INTERFACE_0)?;
 
     let mut gps_parser= GpsParser::new()?;
+
+    //load up database file
+    let options = SqliteConnectOptions::new()
+        .filename(SQLITE_DATABASE_PATH)
+        .create_if_missing(true);
+
+    let pool = sqlite::SqlitePool::connect_with(options).await?;
+    // Create a GPS data table if it doesn't exist
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS gps_data (
+            fix_time TEXT,
+            fix_date TEXT,
+            latitude REAL,
+            longitude REAL,
+            altitude REAL,
+            speed_over_ground REAL,
+            true_course REAL,
+            num_of_fix_satellites INTEGER,
+            hdop REAL,
+            vdop REAL,
+            pdop REAL,
+            geoid_separation REAL,
+            PRIMARY KEY (fix_time, fix_date)
+        )",
+    ).execute(&pool).await?;
+
     // Read received messages on the other interface
     loop {
         match can_socket.read_frame() {
             Ok(frame) => {
                 match frame.id() {
                     Id::Standard(s) if matches!(s.as_raw(), 0x50) =>{
-                        gps_parser.parse(frame.data());
+                        gps_parser.parse(frame.data(),&pool).await?;
                     }
                     Id::Standard(s) if matches!(s.as_raw(), 0x60) =>{
                         println!("message from 0x60");
