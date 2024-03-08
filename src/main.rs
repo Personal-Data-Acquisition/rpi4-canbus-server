@@ -164,7 +164,7 @@ impl Parser for Mpu9250Parser {
 
         // Extract data
         let mut data = [0.0; 3];
-        let mut index = 2;
+        let mut index = 1;
         for i in 0..3 {
             let f16_bytes: [u8; 2] = [frame_data[index], frame_data[index + 1]];
             let f16_value = f16::from_le_bytes(f16_bytes);
@@ -174,9 +174,9 @@ impl Parser for Mpu9250Parser {
 
         // Populate readings array based on label
         let label_index = match label {
-            ['a', 'c'] => 0,
-            ['m', 'g'] => 1,
-            ['g', 'y'] => 2,
+            ['a'] => 0,
+            ['m'] => 1,
+            ['g'] => 2,
             _ => return Err(anyhow!("Invalid label")),
         };
         self.readings[label_index] = data;
