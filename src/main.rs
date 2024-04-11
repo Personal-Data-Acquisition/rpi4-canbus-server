@@ -1,14 +1,13 @@
-use std::io::Read;
+use std::collections::HashMap;
 use std::str::from_utf8;
 use socketcan::{CanFrame, CanSocket, EmbeddedFrame, Socket};
-use embedded_can::{Frame, Id, StandardId};
+use embedded_can::{Id, StandardId};
 use nmea::{Nmea, SentenceType};
 use half::f16;
 use sqlx::SqlitePool;
 use anyhow::{anyhow, Result};
 use sqlx::sqlite::SqliteConnectOptions;
 use async_trait::async_trait;
-use socketcan::Error::Can;
 
 #[async_trait]
 trait Parser {
@@ -18,6 +17,10 @@ trait Parser {
 }
 
 const SQLITE_DATABASE_PATH: &str = "sensor_data.db";
+//needs to be unchecked to avoid unwrap
+const CONFIG_SERVER_ID: StandardId = unsafe { StandardId::new_unchecked(0xfe) };
+
+const CONFIG_CLIENT_ID: StandardId = unsafe { StandardId::new_unchecked(0xff) };
 
 struct GpsParser {
     nmea: Nmea,
@@ -224,31 +227,66 @@ async fn main() -> Result<()> {
 
     let pool = SqlitePool::connect_with(options).await?;
 
-    let mut gps_parser= GpsParser::new(&pool).await?;
-    let mut acc_parser= Mpu9250Parser::new(&pool).await?;
+    let mut parsers: HashMap<u8, Box<dyn Parser>> = HashMap::new();
+
+    let mut next_sensor_index =5;
 
     // Read received messages on the other interface
     loop {
         match can_socket.read_frame() {
             Ok(frame) => {
                 match frame.id() {
-
-                    Id::Standard(s) if matches!(s.as_raw(), 0x50) =>{
-                        gps_parser.parse(frame.data(),&pool).await?;
-                    }
-                    Id::Standard(s) if matches!(s.as_raw(), 0x60) =>{
-                        acc_parser.parse(frame.data(),&pool).await?;
-                    }
-                    Id::Standard(s) if matches!(s.as_raw(), 0xff) =>{
+                    Id::Standard(CONFIG_CLIENT_ID)=>{
                         println!("{:?}",frame.data());
-                        let frame = CanFrame::new(StandardId::new(0xfe).unwrap(), frame.data()).unwrap();
-                        can_socket.write_frame(&frame).expect("TODO: panic message");
-                        let frame = CanFrame::new(StandardId::new(0xfe).unwrap(), &[0x55]).unwrap();
-                        can_socket.write_frame(&frame).expect("TODO: panic message");
+                        let frame = CanFrame::new(CONFIG_SERVER_ID, frame.data()).unwrap();
+                        can_socket.write_frame(&frame).expect("Err: cannot send canbus message");
+                        let frame = CanFrame::new(CONFIG_SERVER_ID, &[next_sensor_index]).unwrap();
+                        can_socket.write_frame(&frame).expect("Err: cannot send canbus message");
 
+                        let mut conf_data:Vec<u8>=Vec::new();
+                        //read entire config data
+                        loop {
+                            match can_socket.read_frame() {
+                                Ok(frame) => {
+                                    conf_data.extend_from_slice(frame.data());
+                                    // Check if the received data contains a newline character
+                                    if let Some(_) = frame.data().iter().position(|&x| x == b'\n') {
+                                        break; // Exit loop if newline character is found
+                                    }
+                                }
+                                Err(_) => break, // Channel is closed, exit loop
+                            }
+                        }
 
+                        let parts: Vec<&str> = from_utf8(&conf_data).unwrap().split(',').collect();
+                        let id = parts[0].trim_start_matches("ID:").trim();
+                        let type_ = parts[1].trim_start_matches("TYPE:").trim();
+
+                        match type_ {
+                            "GPS_GNSS7" => {
+                                let parser = Box::new(GpsParser::new(&pool).await?);
+                                parsers.insert(next_sensor_index, parser);
+                            },
+                            "ACC_MPU9250" => {
+                                let parser= Box::new(Mpu9250Parser::new(&pool).await?);
+                                parsers.insert(next_sensor_index, parser);
+                            },
+                            _ => {
+                                println!("Unknown sensor type: {}", type_);
+                                continue;
+                            }
+                        };
+                        println!("{} Sensor with id:{} registered to canbus id:{}",type_,id,next_sensor_index);
+
+                        next_sensor_index+=1;
                     }
-                    Id::Standard(_) => {}
+
+                    Id::Standard(s) =>{
+                        match parsers.get_mut(&(s.as_raw()as u8)){
+                            None => {println!("Err: No parser registered for id:{}",s.as_raw())}
+                            Some(p) => {p.parse(frame.data(),&pool).await?}
+                        }
+                    }
                     Id::Extended(_) => {}
                 }
             }
