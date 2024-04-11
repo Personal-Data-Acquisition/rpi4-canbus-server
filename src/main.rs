@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::str::from_utf8;
 use socketcan::{CanFrame, CanSocket, EmbeddedFrame, Socket};
 use embedded_can::{Frame, Id, StandardId};
@@ -7,6 +8,7 @@ use sqlx::SqlitePool;
 use anyhow::{anyhow, Result};
 use sqlx::sqlite::SqliteConnectOptions;
 use async_trait::async_trait;
+use socketcan::Error::Can;
 
 #[async_trait]
 trait Parser {
@@ -160,7 +162,7 @@ impl Parser for Mpu9250Parser {
         })
     }
     async fn parse(&mut self, frame_data:&[u8],pool: &SqlitePool)->Result<()> {
-        let label = [frame_data[0] as char, frame_data[1] as char];
+        let label = frame_data[0] as char;
 
         // Extract data
         let mut data = [0.0; 3];
@@ -174,9 +176,9 @@ impl Parser for Mpu9250Parser {
 
         // Populate readings array based on label
         let label_index = match label {
-            ['a'] => 0,
-            ['m'] => 1,
-            ['g'] => 2,
+            'a' => 0,
+            'm' => 1,
+            'g' => 2,
             _ => return Err(anyhow!("Invalid label")),
         };
         self.readings[label_index] = data;
@@ -230,11 +232,21 @@ async fn main() -> Result<()> {
         match can_socket.read_frame() {
             Ok(frame) => {
                 match frame.id() {
+
                     Id::Standard(s) if matches!(s.as_raw(), 0x50) =>{
                         gps_parser.parse(frame.data(),&pool).await?;
                     }
                     Id::Standard(s) if matches!(s.as_raw(), 0x60) =>{
                         acc_parser.parse(frame.data(),&pool).await?;
+                    }
+                    Id::Standard(s) if matches!(s.as_raw(), 0xff) =>{
+                        println!("{:?}",frame.data());
+                        let frame = CanFrame::new(StandardId::new(0xfe).unwrap(), frame.data()).unwrap();
+                        can_socket.write_frame(&frame).expect("TODO: panic message");
+                        let frame = CanFrame::new(StandardId::new(0xfe).unwrap(), &[0x55]).unwrap();
+                        can_socket.write_frame(&frame).expect("TODO: panic message");
+
+
                     }
                     Id::Standard(_) => {}
                     Id::Extended(_) => {}
