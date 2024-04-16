@@ -206,10 +206,36 @@ impl Parser for Mpu9250Parser {
 
         Ok(())
     }
-
-
 }
 
+struct ThermalprobeParser;
+#[async_trait]
+impl Parser for ThermalprobeParser {
+    async fn new(pool: &SqlitePool) -> Result<Self> {
+        // Create a GPS data table if it doesn't exist
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS thermalprobe_data (
+            id INTEGER PRIMARY KEY,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            temperature_celsius REAL,
+        )",
+        ).execute(pool).await?;
+
+        Ok(Self)
+    }
+    async fn parse(&mut self, frame_data:&[u8],pool: &SqlitePool)->Result<()> {
+
+        // Extract data
+        let temp=f32::from_le_bytes([frame_data[0],frame_data[1],frame_data[3],frame_data[4]]);
+
+        sqlx::query(
+            "INSERT INTO thermalprobe_data (temperature_celsius)\
+            VALUES (?)")
+            .bind(temp)
+            .execute(pool).await?;
+        Ok(())
+    }
+}
 
 const CAN_INTERFACE_0: &str = "can0";
 //tokio for sql operations
@@ -269,6 +295,10 @@ async fn main() -> Result<()> {
                             },
                             "ACC_MPU9250" => {
                                 let parser= Box::new(Mpu9250Parser::new(&pool).await?);
+                                parsers.insert(next_sensor_index, parser);
+                            },
+                            "THERMAL_PROBE" => {
+                                let parser= Box::new(ThermalprobeParser::new(&pool).await?);
                                 parsers.insert(next_sensor_index, parser);
                             },
                             _ => {
