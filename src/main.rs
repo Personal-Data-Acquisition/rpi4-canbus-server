@@ -9,6 +9,19 @@ use anyhow::{anyhow, Result};
 use sqlx::sqlite::SqliteConnectOptions;
 use async_trait::async_trait;
 
+use lazy_static::lazy_static;
+use dirs;
+
+lazy_static! {
+    static ref SQLITE_DATABASE_PATH: String = {
+        // Get the home directory path
+        let mut path = dirs::home_dir().expect("Failed to get home directory");
+        path.push("sensor_data.db");
+        path.to_string_lossy().into_owned()
+    };
+}
+
+
 #[async_trait]
 trait Parser {
     async fn new(pool: &SqlitePool) -> Result<Self>    where
@@ -16,7 +29,8 @@ trait Parser {
     async fn parse(&mut self, frame_data: &[u8], pool: &SqlitePool) -> Result<()>;
 }
 
-const SQLITE_DATABASE_PATH: &str = "sensor_data.db";
+// const SQLITE_DATABASE_PATH: &str = "sensor_data.db";
+// const path: &str=dirs::home_dir().unwrap().to_str().unwrap();
 //needs to be unchecked to avoid unwrap
 const CONFIG_SERVER_ID: StandardId = unsafe { StandardId::new_unchecked(0xfe) };
 
@@ -241,6 +255,7 @@ const CAN_INTERFACE_0: &str = "can0";
 //tokio for sql operations
 #[tokio::main]
 async fn main() -> Result<()> {
+    println!("SQLite Database Path: {:?}", *SQLITE_DATABASE_PATH);
 
     // Open CAN sockets for sending and receiving
     let can_socket = CanSocket::open(CAN_INTERFACE_0)?;
@@ -248,7 +263,7 @@ async fn main() -> Result<()> {
 
     //load up database file
     let options = SqliteConnectOptions::new()
-        .filename(SQLITE_DATABASE_PATH)
+        .filename(SQLITE_DATABASE_PATH.as_str())
         .create_if_missing(true);
 
     let pool = SqlitePool::connect_with(options).await?;
