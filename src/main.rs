@@ -29,8 +29,6 @@ trait Parser {
     async fn parse(&mut self, frame_data: &[u8], pool: &SqlitePool) -> Result<()>;
 }
 
-// const SQLITE_DATABASE_PATH: &str = "sensor_data.db";
-// const path: &str=dirs::home_dir().unwrap().to_str().unwrap();
 //needs to be unchecked to avoid unwrap
 const CONFIG_SERVER_ID: StandardId = unsafe { StandardId::new_unchecked(0xfe) };
 
