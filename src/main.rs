@@ -9,6 +9,19 @@ use anyhow::{anyhow, Result};
 use sqlx::sqlite::SqliteConnectOptions;
 use async_trait::async_trait;
 
+use lazy_static::lazy_static;
+use dirs;
+
+lazy_static! {
+    static ref SQLITE_DATABASE_PATH: String = {
+        // Get the home directory path
+        let mut path = dirs::home_dir().expect("Failed to get home directory");
+        path.push("sensor_data.db");
+        path.to_string_lossy().into_owned()
+    };
+}
+
+
 #[async_trait]
 trait Parser {
     async fn new(pool: &SqlitePool) -> Result<Self>    where
@@ -16,7 +29,6 @@ trait Parser {
     async fn parse(&mut self, frame_data: &[u8], pool: &SqlitePool) -> Result<()>;
 }
 
-const SQLITE_DATABASE_PATH: &str = "sensor_data.db";
 //needs to be unchecked to avoid unwrap
 const CONFIG_SERVER_ID: StandardId = unsafe { StandardId::new_unchecked(0xfe) };
 
@@ -206,15 +218,42 @@ impl Parser for Mpu9250Parser {
 
         Ok(())
     }
-
-
 }
 
+struct ThermalprobeParser;
+#[async_trait]
+impl Parser for ThermalprobeParser {
+    async fn new(pool: &SqlitePool) -> Result<Self> {
+        // Create a GPS data table if it doesn't exist
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS thermalprobe_data (
+            id INTEGER PRIMARY KEY,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            temperature_celsius REAL,
+        )",
+        ).execute(pool).await?;
+
+        Ok(Self)
+    }
+    async fn parse(&mut self, frame_data:&[u8],pool: &SqlitePool)->Result<()> {
+
+        // Extract data
+        let temp=f32::from_le_bytes([frame_data[0],frame_data[1],frame_data[3],frame_data[4]]);
+
+        sqlx::query(
+            "INSERT INTO thermalprobe_data (temperature_celsius)\
+            VALUES (?)")
+            .bind(temp)
+            .execute(pool).await?;
+        Ok(())
+    }
+}
 
 const CAN_INTERFACE_0: &str = "can0";
 //tokio for sql operations
 #[tokio::main]
 async fn main() -> Result<()> {
+    println!("SQLite Database Path: {:?}", *SQLITE_DATABASE_PATH);
 
     // Open CAN sockets for sending and receiving
     let can_socket = CanSocket::open(CAN_INTERFACE_0)?;
@@ -222,7 +261,7 @@ async fn main() -> Result<()> {
 
     //load up database file
     let options = SqliteConnectOptions::new()
-        .filename(SQLITE_DATABASE_PATH)
+        .filename(SQLITE_DATABASE_PATH.as_str())
         .create_if_missing(true);
 
     let pool = SqlitePool::connect_with(options).await?;
@@ -269,6 +308,10 @@ async fn main() -> Result<()> {
                             },
                             "ACC_MPU9250" => {
                                 let parser= Box::new(Mpu9250Parser::new(&pool).await?);
+                                parsers.insert(next_sensor_index, parser);
+                            },
+                            "THERMAL_PROBE" => {
+                                let parser= Box::new(ThermalprobeParser::new(&pool).await?);
                                 parsers.insert(next_sensor_index, parser);
                             },
                             _ => {
