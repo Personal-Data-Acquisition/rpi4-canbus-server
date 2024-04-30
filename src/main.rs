@@ -270,6 +270,12 @@ async fn main() -> Result<()> {
 
     let mut next_sensor_index =5;
 
+    //send new server reset message
+    let frame = CanFrame::new(CONFIG_SERVER_ID, &[5]).unwrap();
+
+    can_socket.write_frame(&frame).expect("Err: cannot send canbus message");
+
+
     // Read received messages on the other interface
     loop {
         match can_socket.read_frame() {
