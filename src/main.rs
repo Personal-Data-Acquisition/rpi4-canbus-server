@@ -229,7 +229,7 @@ impl Parser for ThermalprobeParser {
             "CREATE TABLE IF NOT EXISTS thermalprobe_data (
             id INTEGER PRIMARY KEY,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            temperature_celsius REAL,
+            temperature_celsius REAL
         )",
         ).execute(pool).await?;
 
@@ -238,7 +238,7 @@ impl Parser for ThermalprobeParser {
     async fn parse(&mut self, frame_data:&[u8],pool: &SqlitePool)->Result<()> {
 
         // Extract data
-        let temp=f32::from_le_bytes([frame_data[0],frame_data[1],frame_data[3],frame_data[4]]);
+        let temp=f32::from_le_bytes([frame_data[0],frame_data[1],frame_data[2],frame_data[3]]);
 
         sqlx::query(
             "INSERT INTO thermalprobe_data (temperature_celsius)\
