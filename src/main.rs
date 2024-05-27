@@ -8,6 +8,7 @@ use sqlx::SqlitePool;
 use anyhow::{anyhow, Result};
 use sqlx::sqlite::SqliteConnectOptions;
 use async_trait::async_trait;
+use std::time::{Duration, Instant};
 
 use lazy_static::lazy_static;
 use dirs;
@@ -33,6 +34,8 @@ trait Parser {
 const CONFIG_SERVER_ID: StandardId = unsafe { StandardId::new_unchecked(0xfe) };
 
 const CONFIG_CLIENT_ID: StandardId = unsafe { StandardId::new_unchecked(0xff) };
+
+const CANBUS_KEEPALIVE: &[u8] =&[0x6];
 
 struct GpsParser {
     nmea: Nmea,
@@ -267,14 +270,16 @@ async fn main() -> Result<()> {
     let pool = SqlitePool::connect_with(options).await?;
 
     let mut parsers: HashMap<u8, Box<dyn Parser>> = HashMap::new();
+    let mut sensor_responses: HashMap<u8, Instant> = HashMap::new();
 
     let mut next_sensor_index =5;
 
     //send new server reset message
     let frame = CanFrame::new(CONFIG_SERVER_ID, &[5]).unwrap();
+    can_socket.write_frame(&frame).expect("Err: cannot send CAN bus message");
 
-    can_socket.write_frame(&frame).expect("Err: cannot send canbus message");
-
+    let measurement_interval = Duration::from_secs(1);
+    let mut last_measurement = Instant::now();
 
     // Read received messages on the other interface
     loop {
@@ -327,13 +332,23 @@ async fn main() -> Result<()> {
                         };
                         println!("{} Sensor with id:{} registered to canbus id:{}",type_,id,next_sensor_index);
 
-                        next_sensor_index+=1;
+                        sensor_responses.insert(next_sensor_index, Instant::now());
+                        next_sensor_index += 1;
                     }
 
-                    Id::Standard(s) =>{
-                        match parsers.get_mut(&(s.as_raw()as u8)){
-                            None => {println!("Err: No parser registered for id:{}",s.as_raw())}
-                            Some(p) => {p.parse(frame.data(),&pool).await?}
+                    Id::Standard(s) => {
+                        if frame.data() == CANBUS_KEEPALIVE {
+                            // Update the last response time for this sensor
+                            sensor_responses.insert(s.as_raw() as u8, Instant::now());
+                        } else {
+                            match parsers.get_mut(&(s.as_raw() as u8)) {
+                                None => {
+                                    println!("Err: No parser registered for id:{}", s.as_raw())
+                                }
+                                Some(p) => {
+                                    p.parse(frame.data(), &pool).await?
+                                }
+                            }
                         }
                     }
                     Id::Extended(_) => {}
@@ -342,6 +357,27 @@ async fn main() -> Result<()> {
             Err(err) => {
                 eprintln!("Error reading CAN message: {:?}", err);
             }
+        }
+
+        // Periodic check for sensor connectivity
+        if last_measurement.elapsed() >= measurement_interval {
+            // Remove sensors that haven't responded since the last message
+            let now = Instant::now();
+            sensor_responses.retain(|&id, &mut last_response| {
+                if now.duration_since(last_response) <= measurement_interval {
+                    true
+                } else {
+                    println!("Sensor {} did not respond and has been removed", id);
+                    parsers.remove(&id);
+                    false
+                }
+            });
+
+            // Send the connectivity check request
+            let frame = CanFrame::new(CONFIG_SERVER_ID, CANBUS_KEEPALIVE).unwrap();
+            can_socket.write_frame(&frame).expect("Err: cannot send CAN bus message");
+
+            last_measurement = Instant::now();
         }
     }
     Ok(())
