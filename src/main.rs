@@ -278,7 +278,7 @@ async fn main() -> Result<()> {
     let frame = CanFrame::new(CONFIG_SERVER_ID, &[5]).unwrap();
     can_socket.write_frame(&frame).expect("Err: cannot send CAN bus message");
 
-    let measurement_interval = Duration::from_secs(1);
+    let measurement_interval = Duration::from_secs(2);
     let mut last_measurement = Instant::now();
 
     // Read received messages on the other interface
@@ -338,6 +338,7 @@ async fn main() -> Result<()> {
 
                     Id::Standard(s) => {
                         if frame.data() == CANBUS_KEEPALIVE {
+                            println!("keepalive responded:{}",s.as_raw());
                             // Update the last response time for this sensor
                             sensor_responses.insert(s.as_raw() as u8, Instant::now());
                         } else {
@@ -364,7 +365,7 @@ async fn main() -> Result<()> {
             // Remove sensors that haven't responded since the last message
             let now = Instant::now();
             sensor_responses.retain(|&id, &mut last_response| {
-                if now.duration_since(last_response) <= measurement_interval {
+                if now.duration_since(last_response) <= measurement_interval*2 {
                     true
                 } else {
                     println!("Sensor {} did not respond and has been removed", id);
